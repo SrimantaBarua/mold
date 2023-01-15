@@ -1,4 +1,7 @@
-use std::cell::Cell;
+use std::borrow::Borrow;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -104,7 +107,21 @@ where
     }
 }
 
+impl<T> Clone for Root<T> {
+    fn clone(&self) -> Self {
+        Root(self.0)
+    }
+}
+
+impl<T> Copy for Root<T> {}
+
 pub struct Ptr<'a, T>(NonNull<Object<T>>, &'a PhantomData<()>);
+
+impl<'a, T> Ptr<'a, T> {
+    pub fn ptr_eq(&self, other: Self) -> bool {
+        std::ptr::eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+}
 
 impl<'a, T> Deref for Ptr<'a, T> {
     type Target = T;
@@ -123,6 +140,14 @@ where
         f.debug_tuple("Ptr").field(self.deref()).finish()
     }
 }
+
+impl<'a, T> Clone for Ptr<'a, T> {
+    fn clone(&self) -> Self {
+        Ptr(self.0, &PhantomData)
+    }
+}
+
+impl<'a, T> Copy for Ptr<'a, T> {}
 
 #[derive(Debug)]
 enum ObjectType {
@@ -167,24 +192,55 @@ impl std::fmt::Debug for Cons {
 impl MoldObject for Cons {}
 
 #[derive(Debug)]
+pub struct Str(String);
+
+impl MoldObject for Str {}
+
+#[derive(Debug)]
 pub struct Heap {
     objects: Cell<*mut ObjectHeader>,
+    interner: RefCell<Interner>,
 }
 
 impl Heap {
     pub fn new() -> Heap {
         Heap {
             objects: Cell::new(std::ptr::null_mut()),
+            interner: RefCell::new(Interner::new()),
         }
     }
 
     pub fn new_cons(&self, car: Value, cdr: Value) -> Ptr<'_, Cons> {
+        self.new_object(Cons { car, cdr })
+    }
+
+    pub fn new_str<S>(&self, string: S) -> Ptr<'_, Str>
+    where
+        S: AsRef<str> + ToString,
+    {
+        if let Some(str) = self.interner.borrow().get(&string.as_ref()) {
+            return Ptr(str.0, &PhantomData);
+        }
+        let ptr = self.new_object(Str(string.to_string()));
+        self.interner.borrow_mut().insert(WeakStr(ptr.0));
+        ptr
+    }
+
+    pub fn garbage_collect(&mut self) {
+        // 1. Mark roots
+        // 2. Free unmarked objects
+        // FIXME: Before we free a Str object, we need to notify the interner to remove the Str
+        //        from its set of strings.
+        unimplemented!()
+    }
+
+    fn new_object<T>(&self, data: T) -> Ptr<'_, T> {
         let object = Box::new(Object {
             header: ObjectHeader {
                 next: self.objects.get(),
                 typ: ObjectType::Cons,
             },
-            data: Cons { car, cdr },
+            data,
         });
         let object_ptr = Box::into_raw(object);
         // We can do this because Object<T> is #[repr(C)]
@@ -192,8 +248,64 @@ impl Heap {
         // Safe because we just allocated the pointer
         Ptr(unsafe { NonNull::new_unchecked(object_ptr) }, &PhantomData)
     }
+}
 
-    pub fn garbage_collect(&mut self) {
-        unimplemented!()
+#[derive(Clone)]
+struct WeakStr(NonNull<Object<Str>>);
+
+impl WeakStr {
+    // This is unsafe in isolation - it requires the Interner and the Heap working in tandem to
+    // ensure invariants hold. The invariant being - the Heap should notify the interner that it
+    // should remove a string from its hashset, _before_ the Heap deletes the object.
+    fn as_str(&self) -> &str {
+        unsafe { &self.0.as_ref().data.0 }
+    }
+}
+
+impl Borrow<str> for WeakStr {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for WeakStr {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str().eq(other.as_str())
+    }
+}
+
+impl Eq for WeakStr {}
+
+impl Hash for WeakStr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state)
+    }
+}
+
+impl std::fmt::Debug for WeakStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("WeakStr").field(&self.as_str()).finish()
+    }
+}
+
+#[derive(Debug)]
+struct Interner {
+    strings: HashSet<WeakStr>,
+}
+
+impl Interner {
+    fn new() -> Interner {
+        Interner {
+            strings: HashSet::default(),
+        }
+    }
+
+    fn get(&self, string: &str) -> Option<WeakStr> {
+        self.strings.get(string).cloned()
+    }
+
+    fn insert(&mut self, string: WeakStr) {
+        debug_assert!(self.get(string.as_str()).is_none());
+        self.strings.insert(string);
     }
 }
