@@ -34,8 +34,16 @@ impl Value {
         Value(ValueType::Cons(ptr.0))
     }
 
+    pub fn str(ptr: Ptr<'_, Str>) -> Value {
+        Value(ValueType::Str(ptr.0))
+    }
+
     pub fn is_cons(&self) -> bool {
         std::matches!(self.0, ValueType::Cons(_))
+    }
+
+    pub fn is_str(&self) -> bool {
+        std::matches!(self.0, ValueType::Str(_))
     }
 }
 
@@ -47,6 +55,7 @@ enum ValueType {
     Integer(i32),
     Double(f64),
     Cons(NonNull<Object<Cons>>),
+    Str(NonNull<Object<Str>>),
 }
 
 pub struct ReachableValue<'a>(Value, &'a PhantomData<()>);
@@ -71,6 +80,22 @@ impl<'a> ReachableValue<'a> {
             panic!("as_cons_unchecked called for {:?}", self.0);
         }
     }
+
+    pub fn as_str(&self) -> Option<Ptr<'a, Str>> {
+        if self.0.is_str() {
+            Some(unsafe { self.as_str_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn as_str_unchecked(&self) -> Ptr<'a, Str> {
+        if let ValueType::Str(ptr) = self.0 .0 {
+            Ptr(ptr, &PhantomData)
+        } else {
+            panic!("as_str_unchecked called for {:?}", self.0);
+        }
+    }
 }
 
 impl<'a> std::fmt::Debug for ReachableValue<'a> {
@@ -79,6 +104,10 @@ impl<'a> std::fmt::Debug for ReachableValue<'a> {
             ValueType::Cons(_) => {
                 // Safe because we've just checked this is a cons
                 unsafe { self.as_cons_unchecked().fmt(f) }
+            }
+            ValueType::Str(_) => {
+                // Safe because we've just checked this is a str
+                unsafe { self.as_str_unchecked().fmt(f) }
             }
             _ => self.0.fmt(f),
         }
@@ -152,6 +181,7 @@ impl<'a, T> Copy for Ptr<'a, T> {}
 #[derive(Debug)]
 enum ObjectType {
     Cons,
+    Str,
 }
 
 struct ObjectHeader {
@@ -211,7 +241,7 @@ impl Heap {
     }
 
     pub fn new_cons(&self, car: Value, cdr: Value) -> Ptr<'_, Cons> {
-        self.new_object(Cons { car, cdr })
+        self.new_object(ObjectType::Cons, Cons { car, cdr })
     }
 
     pub fn new_str<S>(&self, string: S) -> Ptr<'_, Str>
@@ -221,7 +251,7 @@ impl Heap {
         if let Some(str) = self.interner.borrow().get(&string.as_ref()) {
             return Ptr(str.0, &PhantomData);
         }
-        let ptr = self.new_object(Str(string.to_string()));
+        let ptr = self.new_object(ObjectType::Str, Str(string.to_string()));
         self.interner.borrow_mut().insert(WeakStr(ptr.0));
         ptr
     }
@@ -234,11 +264,11 @@ impl Heap {
         unimplemented!()
     }
 
-    fn new_object<T>(&self, data: T) -> Ptr<'_, T> {
+    fn new_object<T>(&self, typ: ObjectType, data: T) -> Ptr<'_, T> {
         let object = Box::new(Object {
             header: ObjectHeader {
                 next: self.objects.get(),
-                typ: ObjectType::Cons,
+                typ,
             },
             data,
         });
