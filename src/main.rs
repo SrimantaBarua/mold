@@ -1,8 +1,10 @@
 fn main() {
     let mut heap = mold::Heap::new();
-    let cons = heap.new_cons(
-        mold::Value::str(heap.new_str("foo")),
-        mold::Value::cons(heap.new_cons(mold::Value::int(1), mold::Value::null())),
-    );
-    println!("{:?}", cons);
+    let mut chunk = mold::Chunk::new("main");
+    chunk.push_op(mold::Op::Null, 1);
+    chunk.push_op(mold::Op::True, 1);
+    chunk.push_op(mold::Op::False, 2);
+    chunk.push_constant(mold::Value::int(1));
+    chunk.push_op(mold::Op::Const0, 3);
+    println!("{}", chunk);
 }
