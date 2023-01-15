@@ -90,7 +90,7 @@ impl<T> Deref for Root<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // Safe because we know Ptr<'a, T> hasn't been GC'ed
+        // Safe because we know Root<T> hasn't been GC'ed
         unsafe { &self.0.as_ref().data }
     }
 }
