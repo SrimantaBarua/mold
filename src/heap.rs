@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Value(ValueType);
 
 impl Value {
@@ -30,9 +30,13 @@ impl Value {
     pub fn cons(ptr: Ptr<'_, Cons>) -> Value {
         Value(ValueType::Cons(ptr.0))
     }
+
+    pub fn is_cons(&self) -> bool {
+        std::matches!(self.0, ValueType::Cons(_))
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum ValueType {
     Null,  // '()
     True,  // #t
@@ -40,6 +44,42 @@ enum ValueType {
     Integer(i32),
     Double(f64),
     Cons(NonNull<Object<Cons>>),
+}
+
+pub struct ReachableValue<'a>(Value, &'a PhantomData<()>);
+
+impl<'a> ReachableValue<'a> {
+    fn new(value: Value) -> ReachableValue<'a> {
+        ReachableValue(value, &PhantomData)
+    }
+
+    pub fn as_cons(&self) -> Option<Ptr<'a, Cons>> {
+        if self.0.is_cons() {
+            Some(unsafe { self.as_cons_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn as_cons_unchecked(&self) -> Ptr<'a, Cons> {
+        if let ValueType::Cons(ptr) = self.0 .0 {
+            Ptr(ptr, &PhantomData)
+        } else {
+            panic!("as_cons_unchecked called for {:?}", self.0);
+        }
+    }
+}
+
+impl<'a> std::fmt::Debug for ReachableValue<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 .0 {
+            ValueType::Cons(_) => {
+                // Safe because we've just checked this is a cons
+                unsafe { self.as_cons_unchecked().fmt(f) }
+            }
+            _ => self.0.fmt(f),
+        }
+    }
 }
 
 pub trait MoldObject: std::fmt::Debug {}
@@ -100,10 +140,28 @@ struct Object<T> {
     data: T,
 }
 
-#[derive(Debug)]
 pub struct Cons {
     car: Value,
     cdr: Value,
+}
+
+impl Cons {
+    fn car(&self) -> ReachableValue<'_> {
+        ReachableValue(self.car, &PhantomData)
+    }
+
+    fn cdr(&self) -> ReachableValue<'_> {
+        ReachableValue(self.cdr, &PhantomData)
+    }
+}
+
+impl std::fmt::Debug for Cons {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cons")
+            .field("car", &self.car())
+            .field("cdr", &self.cdr())
+            .finish()
+    }
 }
 
 impl MoldObject for Cons {}
