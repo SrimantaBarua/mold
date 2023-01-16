@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 #[derive(Clone, Copy, Debug)]
@@ -38,12 +38,20 @@ impl Value {
         Value(ValueType::Str(ptr.0))
     }
 
+    pub fn symbol(ptr: Ptr<'_, Str>) -> Value {
+        Value(ValueType::Symbol(ptr.0))
+    }
+
     pub fn is_cons(&self) -> bool {
         std::matches!(self.0, ValueType::Cons(_))
     }
 
     pub fn is_str(&self) -> bool {
         std::matches!(self.0, ValueType::Str(_))
+    }
+
+    pub fn is_symbol(&self) -> bool {
+        std::matches!(self.0, ValueType::Symbol(_))
     }
 }
 
@@ -56,13 +64,18 @@ enum ValueType {
     Double(f64),
     Cons(NonNull<Object<Cons>>),
     Str(NonNull<Object<Str>>),
+    Symbol(NonNull<Object<Str>>),
 }
 
 pub struct ReachableValue<'a>(Value, &'a PhantomData<()>);
 
 impl<'a> ReachableValue<'a> {
-    fn new(value: Value) -> ReachableValue<'a> {
+    pub(crate) unsafe fn new(value: Value) -> ReachableValue<'a> {
         ReachableValue(value, &PhantomData)
+    }
+
+    pub fn into_value(self) -> Value {
+        self.0
     }
 
     pub fn as_cons(&self) -> Option<Ptr<'a, Cons>> {
@@ -96,6 +109,22 @@ impl<'a> ReachableValue<'a> {
             panic!("as_str_unchecked called for {:?}", self.0);
         }
     }
+
+    pub fn as_symbol(&self) -> Option<Ptr<'a, Str>> {
+        if self.0.is_symbol() {
+            Some(unsafe { self.as_symbol_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn as_symbol_unchecked(&self) -> Ptr<'a, Str> {
+        if let ValueType::Symbol(ptr) = self.0 .0 {
+            Ptr(ptr, &PhantomData)
+        } else {
+            panic!("as_symbol_unchecked called for {:?}", self.0);
+        }
+    }
 }
 
 impl<'a> std::fmt::Debug for ReachableValue<'a> {
@@ -103,11 +132,27 @@ impl<'a> std::fmt::Debug for ReachableValue<'a> {
         match self.0 .0 {
             ValueType::Cons(_) => {
                 // Safe because we've just checked this is a cons
-                unsafe { self.as_cons_unchecked().fmt(f) }
+                unsafe {
+                    f.debug_tuple("Value::Cons")
+                        .field(&self.as_cons_unchecked())
+                        .finish()
+                }
             }
             ValueType::Str(_) => {
                 // Safe because we've just checked this is a str
-                unsafe { self.as_str_unchecked().fmt(f) }
+                unsafe {
+                    f.debug_tuple("Value::Str")
+                        .field(&self.as_str_unchecked())
+                        .finish()
+                }
+            }
+            ValueType::Symbol(_) => {
+                // Safe because we've just checked this is a str
+                unsafe {
+                    f.debug_tuple("Value::Symbol")
+                        .field(&self.as_symbol_unchecked())
+                        .finish()
+                }
             }
             _ => self.0.fmt(f),
         }
@@ -124,6 +169,13 @@ impl<T> Deref for Root<T> {
     fn deref(&self) -> &T {
         // Safe because we know Root<T> hasn't been GC'ed
         unsafe { &self.0.as_ref().data }
+    }
+}
+
+impl<T> DerefMut for Root<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // Safe because we know Root<T> hasn't been GC'ed
+        unsafe { &mut self.0.as_mut().data }
     }
 }
 
@@ -150,6 +202,10 @@ impl<'a, T> Ptr<'a, T> {
     pub fn ptr_eq(&self, other: Self) -> bool {
         std::ptr::eq(self.0.as_ptr(), other.0.as_ptr())
     }
+
+    pub(crate) unsafe fn extend_lifetime<'b>(&self) -> Ptr<'b, T> {
+        Ptr(self.0, &PhantomData)
+    }
 }
 
 impl<'a, T> Deref for Ptr<'a, T> {
@@ -158,6 +214,13 @@ impl<'a, T> Deref for Ptr<'a, T> {
     fn deref(&self) -> &T {
         // Safe because we know Ptr<'a, T> hasn't been GC'ed
         unsafe { &self.0.as_ref().data }
+    }
+}
+
+impl<'a, T> DerefMut for Ptr<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // Safe because we know Ptr<'a, T> hasn't been GC'ed
+        unsafe { &mut self.0.as_mut().data }
     }
 }
 
@@ -201,12 +264,17 @@ pub struct Cons {
 }
 
 impl Cons {
-    fn car(&self) -> ReachableValue<'_> {
+    pub(crate) fn car(&self) -> ReachableValue<'_> {
         ReachableValue(self.car, &PhantomData)
     }
 
-    fn cdr(&self) -> ReachableValue<'_> {
+    pub(crate) fn cdr(&self) -> ReachableValue<'_> {
         ReachableValue(self.cdr, &PhantomData)
+    }
+
+    // FIXME: Revisit this when we move to a generational GC
+    pub(crate) fn set_cdr(&mut self, value: Value) {
+        self.cdr = value;
     }
 }
 

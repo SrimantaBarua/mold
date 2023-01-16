@@ -1,6 +1,6 @@
 use std::{iter::Peekable, str::CharIndices};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TokenType<'a> {
     LeftParen,           // (
     RightParen,          // )
@@ -21,8 +21,8 @@ pub enum TokenType<'a> {
 
 #[derive(Debug)]
 pub struct Token<'a> {
-    typ: TokenType<'a>,
-    line_number: usize,
+    pub(crate) typ: TokenType<'a>,
+    pub(crate) line_number: usize,
 }
 
 pub struct Lexer<'a> {
