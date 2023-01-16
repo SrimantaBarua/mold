@@ -12,7 +12,7 @@ pub enum ReaderResult {
 macro_rules! advance_reader {
     ($reader:expr) => {{
         let line_number = $reader.current.line_number;
-        if let Some(message) = $reader.advance(line_number) {
+        if let Some(message) = $reader.advance() {
             return ReaderResult::Error {
                 message,
                 line_number,
@@ -122,7 +122,7 @@ impl<'a, 'b> Reader<'a, 'b> {
         }
     }
 
-    fn advance(&mut self, line_number: usize) -> Option<String> {
+    fn advance(&mut self) -> Option<String> {
         self.current = match self.lexer.next() {
             None => return Some("unterminated expression".to_owned()),
             Some(tok) => tok,
