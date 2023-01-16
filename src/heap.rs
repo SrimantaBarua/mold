@@ -7,64 +7,183 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Value(ValueType);
+pub enum ValueType {
+    Null,
+    True,
+    False,
+    Integer,
+    Double,
+    Cons,
+    Str,
+    Symbol,
+}
+
+#[derive(Clone, Copy)]
+pub struct Value(u64);
 
 impl Value {
+    const NAN_VALUE: u64 = 0x7ff8000000000000;
+    const NON_FLOAT_MASK: u64 = 0x7ffc000000000000;
+    const TYPE_MASK: u64 = 0x8003000000000007;
+    // FIXME: We can get one more bit off the top because of sign extension
+    const POINTER_MASK: u64 = 0x0000fffffffffff8;
+    const I32_MASK: u64 = 0x00000007fffffff8;
+    const I32_SHIFT: u64 = 3;
+    const TYPE_FLAG_NULL: u64 = 0;
+    const TYPE_FLAG_TRUE: u64 = 1;
+    const TYPE_FLAG_FALSE: u64 = 2;
+    const TYPE_FLAG_INTEGER: u64 = 3;
+    const TYPE_FLAG_CONS: u64 = 4;
+    const TYPE_FLAG_STR: u64 = 5;
+    const TYPE_FLAG_SYMBOL: u64 = 6;
+    const TAG_NULL: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_NULL;
+    const TAG_TRUE: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_TRUE;
+    const TAG_FALSE: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_FALSE;
+    const TAG_INTEGER: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_INTEGER;
+    const TAG_CONS: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_CONS;
+    const TAG_STR: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_STR;
+    const TAG_SYMBOL: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_SYMBOL;
+
     pub fn null() -> Value {
-        Value(ValueType::Null)
+        Value(Self::TAG_NULL)
     }
 
     pub fn t() -> Value {
-        Value(ValueType::True)
+        Value(Self::TAG_TRUE)
     }
 
     pub fn f() -> Value {
-        Value(ValueType::False)
+        Value(Self::TAG_FALSE)
     }
 
     pub fn int(i: i32) -> Value {
-        Value(ValueType::Integer(i))
+        Value((((i as u64) << Self::I32_SHIFT) & Self::I32_MASK) | Self::TAG_INTEGER)
     }
 
     pub fn double(f: f64) -> Value {
-        Value(ValueType::Double(f))
+        if f.is_nan() {
+            Value(Self::NAN_VALUE)
+        } else {
+            Value(unsafe { std::mem::transmute(f) })
+        }
     }
 
     pub fn cons(ptr: Ptr<'_, Cons>) -> Value {
-        Value(ValueType::Cons(ptr.0))
+        Value::object(ptr, Self::TAG_CONS)
     }
 
     pub fn str(ptr: Ptr<'_, Str>) -> Value {
-        Value(ValueType::Str(ptr.0))
+        Value::object(ptr, Self::TAG_STR)
     }
 
     pub fn symbol(ptr: Ptr<'_, Str>) -> Value {
-        Value(ValueType::Symbol(ptr.0))
+        Value::object(ptr, Self::TAG_SYMBOL)
+    }
+
+    fn object<T>(ptr: Ptr<'_, T>, tag: u64) -> Value {
+        let raw = ptr.0.as_ptr() as u64;
+        debug_assert_eq!((raw & !Self::POINTER_MASK), 0);
+        Value(raw | tag)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.0 == Self::TAG_NULL
+    }
+
+    pub fn is_t(&self) -> bool {
+        self.0 == Self::TAG_TRUE
+    }
+
+    pub fn is_f(&self) -> bool {
+        self.0 == Self::TAG_FALSE
+    }
+
+    pub fn is_int(&self) -> bool {
+        (self.0 & (Self::NON_FLOAT_MASK | Self::TYPE_MASK)) == Self::TAG_INTEGER
+    }
+
+    pub fn is_double(&self) -> bool {
+        (self.0 & Self::NON_FLOAT_MASK) != Self::NON_FLOAT_MASK
     }
 
     pub fn is_cons(&self) -> bool {
-        std::matches!(self.0, ValueType::Cons(_))
+        (self.0 & (Self::NON_FLOAT_MASK | Self::TYPE_MASK)) == Self::TAG_CONS
     }
 
     pub fn is_str(&self) -> bool {
-        std::matches!(self.0, ValueType::Str(_))
+        (self.0 & (Self::NON_FLOAT_MASK | Self::TYPE_MASK)) == Self::TAG_STR
     }
 
     pub fn is_symbol(&self) -> bool {
-        std::matches!(self.0, ValueType::Symbol(_))
+        (self.0 & (Self::NON_FLOAT_MASK | Self::TYPE_MASK)) == Self::TAG_SYMBOL
+    }
+
+    pub fn as_int(&self) -> Option<i32> {
+        if self.is_int() {
+            Some(unsafe { self.as_int_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn as_int_unchecked(&self) -> i32 {
+        ((self.0 & Self::I32_MASK) >> Self::I32_SHIFT) as i32
+    }
+
+    pub fn as_double(&self) -> Option<f64> {
+        if self.is_double() {
+            Some(unsafe { self.as_double_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn as_double_unchecked(&self) -> f64 {
+        std::mem::transmute(self.0)
+    }
+
+    unsafe fn as_object_unchecked<T>(&self) -> NonNull<Object<T>> {
+        NonNull::new_unchecked((self.0 & Value::POINTER_MASK) as *mut Object<T>)
+    }
+
+    pub fn typ(&self) -> ValueType {
+        match self.0 & (Self::NON_FLOAT_MASK | Self::TYPE_MASK) {
+            Self::TAG_NULL => ValueType::Null,
+            Self::TAG_TRUE => ValueType::True,
+            Self::TAG_FALSE => ValueType::False,
+            Self::TAG_INTEGER => ValueType::Integer,
+            Self::TAG_CONS => ValueType::Cons,
+            Self::TAG_STR => ValueType::Str,
+            Self::TAG_SYMBOL => ValueType::Symbol,
+            _ => {
+                if self.is_double() {
+                    ValueType::Double
+                } else {
+                    panic!("unknown value type: {:?}", self.0)
+                }
+            }
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ValueType {
-    Null,  // '()
-    True,  // #t
-    False, // #f
-    Integer(i32),
-    Double(f64),
-    Cons(NonNull<Object<Cons>>),
-    Str(NonNull<Object<Str>>),
-    Symbol(NonNull<Object<Str>>),
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut strukt = f.debug_struct("Value");
+        strukt.field("raw", &self.0);
+        match self.typ() {
+            ValueType::Null | ValueType::True | ValueType::False => {
+                strukt.field("typ", &self.typ())
+            }
+            ValueType::Integer => strukt.field("int", unsafe { &self.as_int_unchecked() }),
+            ValueType::Double => strukt.field("double", unsafe { &self.as_double_unchecked() }),
+            ValueType::Cons => strukt.field("cons", unsafe { &self.as_object_unchecked::<Cons>() }),
+            ValueType::Str => strukt.field("str", unsafe { &self.as_object_unchecked::<Str>() }),
+            ValueType::Symbol => {
+                strukt.field("symbol", unsafe { &self.as_object_unchecked::<Str>() })
+            }
+        };
+        strukt.finish()
+    }
 }
 
 pub struct ReachableValue<'a>(Value, &'a PhantomData<()>);
@@ -87,11 +206,7 @@ impl<'a> ReachableValue<'a> {
     }
 
     pub unsafe fn as_cons_unchecked(&self) -> Ptr<'a, Cons> {
-        if let ValueType::Cons(ptr) = self.0 .0 {
-            Ptr(ptr, &PhantomData)
-        } else {
-            panic!("as_cons_unchecked called for {:?}", self.0);
-        }
+        self.as_object_unchecked()
     }
 
     pub fn as_str(&self) -> Option<Ptr<'a, Str>> {
@@ -103,11 +218,7 @@ impl<'a> ReachableValue<'a> {
     }
 
     pub unsafe fn as_str_unchecked(&self) -> Ptr<'a, Str> {
-        if let ValueType::Str(ptr) = self.0 .0 {
-            Ptr(ptr, &PhantomData)
-        } else {
-            panic!("as_str_unchecked called for {:?}", self.0);
-        }
+        self.as_object_unchecked()
     }
 
     pub fn as_symbol(&self) -> Option<Ptr<'a, Str>> {
@@ -119,18 +230,18 @@ impl<'a> ReachableValue<'a> {
     }
 
     pub unsafe fn as_symbol_unchecked(&self) -> Ptr<'a, Str> {
-        if let ValueType::Symbol(ptr) = self.0 .0 {
-            Ptr(ptr, &PhantomData)
-        } else {
-            panic!("as_symbol_unchecked called for {:?}", self.0);
-        }
+        self.as_object_unchecked()
+    }
+
+    unsafe fn as_object_unchecked<T>(&self) -> Ptr<'a, T> {
+        Ptr(self.0.as_object_unchecked(), &PhantomData)
     }
 }
 
 impl<'a> std::fmt::Debug for ReachableValue<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 .0 {
-            ValueType::Cons(_) => {
+        match self.0.typ() {
+            ValueType::Cons => {
                 // Safe because we've just checked this is a cons
                 unsafe {
                     f.debug_tuple("Value::Cons")
@@ -138,7 +249,7 @@ impl<'a> std::fmt::Debug for ReachableValue<'a> {
                         .finish()
                 }
             }
-            ValueType::Str(_) => {
+            ValueType::Str => {
                 // Safe because we've just checked this is a str
                 unsafe {
                     f.debug_tuple("Value::Str")
@@ -146,7 +257,7 @@ impl<'a> std::fmt::Debug for ReachableValue<'a> {
                         .finish()
                 }
             }
-            ValueType::Symbol(_) => {
+            ValueType::Symbol => {
                 // Safe because we've just checked this is a str
                 unsafe {
                     f.debug_tuple("Value::Symbol")

@@ -1,9 +1,9 @@
 mod bytecode;
-mod compiler;
 mod heap;
 mod lexer;
+mod reader;
 
 pub use bytecode::{Chunk, Op};
-pub use compiler::{read, ReaderResult};
 pub use heap::{Heap, Value};
 pub use lexer::Lexer;
+pub use reader::{read, ReaderResult};
