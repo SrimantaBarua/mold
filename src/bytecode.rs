@@ -1,4 +1,4 @@
-use crate::Value;
+use crate::{Heap, MoldObject, ObjectType, Ptr, Value, ValueStore};
 
 #[derive(Debug)]
 #[repr(u8)]
@@ -26,22 +26,25 @@ struct LineNumber {
     run_length: usize,
 }
 
-#[derive(Debug)]
 pub struct Chunk {
     name: String,
     opcodes: Vec<u8>,
     lines: Vec<LineNumber>,
-    constants: Vec<Value>,
+    constants: Vec<ValueStore>,
+}
+
+impl MoldObject for Chunk {
+    const TYPE: ObjectType = ObjectType::Chunk;
 }
 
 impl Chunk {
-    pub fn new(name: impl ToString) -> Chunk {
-        Chunk {
+    pub fn new(name: impl ToString, heap: &Heap) -> Ptr<'_, Chunk> {
+        heap.new_object(Chunk {
             name: name.to_string(),
             opcodes: Vec::new(),
             lines: Vec::new(),
             constants: Vec::new(),
-        }
+        })
     }
 
     pub fn push_op(&mut self, op: Op, line_number: usize) {
@@ -59,8 +62,8 @@ impl Chunk {
         self.push_line_number(line_number, 2);
     }
 
-    pub fn push_constant(&mut self, constant: Value) -> usize {
-        self.constants.push(constant);
+    pub fn push_constant(&mut self, constant: Value<'_>) -> usize {
+        self.constants.push(constant.into_inner());
         self.constants.len() - 1
     }
 
@@ -91,8 +94,9 @@ impl Chunk {
         ((self.opcodes[offset] as u16) << 8) | (self.opcodes[offset + 1] as u16)
     }
 
-    pub fn get_constant(&self, index: usize) -> Value {
-        self.constants[index]
+    pub fn get_constant(&self, index: usize) -> Value<'_> {
+        // Safe provided Chunk is heap-allocated.
+        unsafe { Value::new(self.constants[index]) }
     }
 
     pub fn get_line_at_offset(&self, offset: usize) -> usize {
@@ -133,7 +137,7 @@ impl Chunk {
     }
 }
 
-impl std::fmt::Display for Chunk {
+impl std::fmt::Debug for Chunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (mut ip, mut last_line) = (0, usize::MAX);
         write!(f, "{}:\n", self.name)?;

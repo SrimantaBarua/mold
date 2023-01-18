@@ -3,10 +3,10 @@ use crate::lexer::{Token, TokenType};
 use crate::{Heap, Lexer, Value};
 
 #[derive(Debug)]
-pub enum ReaderResult {
+pub enum ReaderResult<'a> {
     Eof,
     Error { message: String, line_number: usize },
-    Value(Value),
+    Value(Value<'a>),
 }
 
 macro_rules! advance_reader {
@@ -31,7 +31,7 @@ where
 }
 
 impl<'a, 'b> Reader<'a, 'b> {
-    fn expression(&mut self) -> ReaderResult {
+    fn expression(&mut self) -> ReaderResult<'b> {
         match self.current.typ.clone() {
             TokenType::LeftParen => self.list(),
             TokenType::RightParen => ReaderResult::Error {
@@ -61,14 +61,17 @@ impl<'a, 'b> Reader<'a, 'b> {
         }
     }
 
-    fn list(&mut self) -> ReaderResult {
+    fn list(&mut self) -> ReaderResult<'b> {
         advance_reader!(self);
         let result = self.heap.new_cons(Value::null(), Value::null());
         let mut current_cons = result;
         let mut first = true;
         loop {
             match self.current.typ {
-                TokenType::RightParen => break ReaderResult::Value(result.cdr().into_value()),
+                TokenType::RightParen => {
+                    // Safe because we're not calling the GC in the middle of read
+                    break ReaderResult::Value(unsafe { result.cdr().extend_lifetime() });
+                }
                 TokenType::Dot => {
                     if first {
                         break ReaderResult::Error {
@@ -88,7 +91,8 @@ impl<'a, 'b> Reader<'a, 'b> {
                                     line_number: self.current.line_number,
                                 };
                             }
-                            break ReaderResult::Value(result.cdr().into_value());
+                            // Safe because we're not calling the GC in the middle of read
+                            break ReaderResult::Value(unsafe { result.cdr().extend_lifetime() });
                         }
                         ReaderResult::Eof => unreachable!(),
                         error => break error,
@@ -110,7 +114,7 @@ impl<'a, 'b> Reader<'a, 'b> {
         }
     }
 
-    fn wrap_expression(&mut self, with: Ptr<'_, Str>) -> ReaderResult {
+    fn wrap_expression(&mut self, with: Ptr<'_, Str>) -> ReaderResult<'b> {
         advance_reader!(self);
         match self.expression() {
             ReaderResult::Value(value) => ReaderResult::Value(Value::cons(self.heap.new_cons(
@@ -131,7 +135,7 @@ impl<'a, 'b> Reader<'a, 'b> {
     }
 }
 
-pub fn read(lexer: &mut Lexer, heap: &Heap) -> ReaderResult {
+pub fn read<'b>(lexer: &'b mut Lexer, heap: &'b Heap) -> ReaderResult<'b> {
     let current = match lexer.next() {
         None => return ReaderResult::Eof,
         Some(tok) => tok,
@@ -143,4 +147,3 @@ pub fn read(lexer: &mut Lexer, heap: &Heap) -> ReaderResult {
     };
     reader.expression()
 }
-
