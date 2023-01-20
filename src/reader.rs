@@ -135,6 +135,8 @@ impl<'a, 'b> Reader<'a, 'b> {
     }
 }
 
+// FIXME: The reader should also return the line number at the start of the expression that was
+//        read.
 pub fn read<'b>(lexer: &'b mut Lexer, heap: &'b Heap) -> ReaderResult<'b> {
     let current = match lexer.next() {
         None => return ReaderResult::Eof,

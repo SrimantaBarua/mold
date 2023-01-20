@@ -1,13 +1,22 @@
-use mold::{Heap, Value};
+use mold::{Heap, Lexer, ReaderResult};
 
 fn main() {
     let heap = Heap::new();
-    let cons = heap.new_cons(
-        Value::cons(heap.new_cons(
-            Value::symbol(heap.new_str("foo")),
-            Value::str(heap.new_str("bar")),
-        )),
-        Value::cons(heap.new_cons(Value::int(5), Value::double(2.5))),
-    );
-    println!("{:?}", cons);
+    let source = "\"hello\"";
+    let mut lexer = Lexer::new(source);
+    let expression = match mold::read(&mut lexer, &heap) {
+        ReaderResult::Value(expression) => expression,
+        ReaderResult::Error {
+            message,
+            line_number,
+        } => {
+            panic!("reader error: {}: {}", line_number, message)
+        }
+        ReaderResult::Eof => {
+            eprintln!("EOF");
+            return;
+        }
+    };
+    let chunk = mold::compile("main", 1, expression, &heap).unwrap();
+    println!("Chunk: {:?}", *chunk);
 }
