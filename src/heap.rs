@@ -45,6 +45,7 @@ impl ValueStore {
     const TAG_SYMBOL: u64 = Self::NON_FLOAT_MASK | Self::TYPE_FLAG_SYMBOL;
 }
 
+#[derive(Clone, Copy)]
 pub struct Value<'a>(ValueStore, &'a PhantomData<()>);
 
 impl<'a> Value<'a> {
@@ -250,21 +251,76 @@ pub trait MoldObject: std::fmt::Debug {
     const TYPE: ObjectType;
 }
 
-pub struct Root<T>(NonNull<Object<T>>);
+#[derive(Debug)]
+struct RootMarker {
+    previous: NonNull<RootMarker>,
+    next: NonNull<RootMarker>,
+    object: NonNull<ObjectHeader>,
+}
+
+impl RootMarker {
+    // This is marked unsafe because the caller has to ensure they call `initialize` before using
+    // this RootMarker.
+    unsafe fn uninitialized(object: NonNull<ObjectHeader>) -> RootMarker {
+        RootMarker {
+            object,
+            previous: NonNull::dangling(),
+            next: NonNull::dangling(),
+        }
+    }
+
+    fn initialize(&mut self) {
+        // Safe because we have a mutable reference to the pointer that we're setting
+        unsafe {
+            self.previous = NonNull::new_unchecked(self);
+            self.next = NonNull::new_unchecked(self);
+        }
+    }
+
+    fn append_to_list(&mut self, head: &mut RootMarker) {
+        unsafe {
+            self.previous = head.previous;
+            self.next = NonNull::new_unchecked(head);
+            head.previous.as_mut().next = NonNull::new_unchecked(self);
+            head.previous = NonNull::new_unchecked(self);
+        }
+    }
+
+    fn unlink(&mut self) {
+        // Safe provided these pointers are valid - invariant is maintained across this module.
+        unsafe {
+            self.previous.as_mut().next = self.next;
+            self.next.as_mut().previous = self.previous;
+        }
+        self.initialize();
+    }
+}
+
+pub struct Root<T>(NonNull<RootMarker>, PhantomData<T>);
+
+impl<T> Root<T> {
+    pub fn ptr_eq(&self, other: Ptr<'_, T>) -> bool {
+        std::ptr::eq(
+            // Safe because the root's pointer stays valid
+            unsafe { self.0.as_ref().object.cast().as_ptr() },
+            other.0.as_ptr(),
+        )
+    }
+}
 
 impl<T> Deref for Root<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // Safe because we know Root<T> hasn't been GC'ed
-        unsafe { &self.0.as_ref().data }
+        // Safe because we know Root<T> hasn't been GC'ed, and Object<T> is #[repr(C)]
+        unsafe { &self.0.as_ref().object.cast::<Object<T>>().as_ref().data }
     }
 }
 
 impl<T> DerefMut for Root<T> {
     fn deref_mut(&mut self) -> &mut T {
-        // Safe because we know Root<T> hasn't been GC'ed
-        unsafe { &mut self.0.as_mut().data }
+        // Safe because we know Root<T> hasn't been GC'ed, and Object<T> is #[repr(C)]
+        unsafe { &mut self.0.as_mut().object.cast::<Object<T>>().as_mut().data }
     }
 }
 
@@ -277,13 +333,12 @@ where
     }
 }
 
-impl<T> Clone for Root<T> {
-    fn clone(&self) -> Self {
-        Root(self.0)
+impl<T> Drop for Root<T> {
+    fn drop(&mut self) {
+        // Safe because we know Root<T> hasn't been GC'ed
+        unsafe { self.0.as_mut().unlink() }
     }
 }
-
-impl<T> Copy for Root<T> {}
 
 pub struct Ptr<'a, T>(NonNull<Object<T>>, &'a PhantomData<()>);
 
@@ -294,6 +349,10 @@ impl<'a, T> Ptr<'a, T> {
 
     pub(crate) unsafe fn extend_lifetime<'b>(&self) -> Ptr<'b, T> {
         Ptr(self.0, &PhantomData)
+    }
+
+    pub(crate) fn root(self, heap: &Heap) -> Root<T> {
+        heap.root(self)
     }
 }
 
@@ -391,15 +450,21 @@ impl MoldObject for Str {
 #[derive(Debug)]
 pub struct Heap {
     objects: Cell<*mut ObjectHeader>,
+    roots: RefCell<RootMarker>,
     interner: RefCell<Interner>,
 }
 
 impl Heap {
     pub fn new() -> Heap {
-        Heap {
+        let mut heap = Heap {
             objects: Cell::new(std::ptr::null_mut()),
             interner: RefCell::new(Interner::new()),
-        }
+            // This is a dummy root marker, so having the object pointer be dangling is okay.
+            // This is safe because we call `initialize` right after.
+            roots: RefCell::new(unsafe { RootMarker::uninitialized(NonNull::dangling()) }),
+        };
+        heap.roots.borrow_mut().initialize();
+        heap
     }
 
     pub fn new_cons(&self, car: Value<'_>, cdr: Value<'_>) -> Ptr<'_, Cons> {
@@ -445,6 +510,19 @@ impl Heap {
         self.objects.set(object_ptr as *mut ObjectHeader);
         // Safe because we just allocated the pointer
         Ptr(unsafe { NonNull::new_unchecked(object_ptr) }, &PhantomData)
+    }
+
+    fn root<T>(&self, ptr: Ptr<'_, T>) -> Root<T> {
+        // Safe because we call initialize right after. The `cast` only works because Object<T> is
+        // #[repr(C)].
+        let mut root_marker = Box::new(unsafe { RootMarker::uninitialized(ptr.0.cast()) });
+        root_marker.initialize();
+        root_marker.append_to_list(&mut *self.roots.borrow_mut());
+        // Safe because we just allocated the pointer
+        Root(
+            unsafe { NonNull::new_unchecked(Box::into_raw(root_marker)) },
+            PhantomData,
+        )
     }
 }
 
