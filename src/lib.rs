@@ -4,42 +4,51 @@ mod heap;
 mod lexer;
 mod reader;
 
+use std::{borrow::Cow, cell::RefCell};
+
 pub use bytecode::{Chunk, Op};
 pub use compiler::compile;
 pub use heap::{Heap, Ptr, Value};
-use heap::{Root, Str};
 pub use lexer::Lexer;
 pub use reader::{read, ReaderResult};
 
 pub(crate) use heap::{MoldObject, ObjectType, ValueStore, ValueType};
 
-struct Builtin {
-    plus: Root<Str>, // +
+use crate::compiler::CompilerResult;
+
+pub enum MoldError<'a> {
+    Compile {
+        module: &'a str,
+        line: usize,
+        message: Cow<'a, str>,
+    },
 }
 
-impl Builtin {
-    fn new(heap: &Heap) -> Builtin {
-        let plus = heap.new_str("+").root(heap);
-        Builtin { plus }
-    }
-}
-
-pub struct Mold {
+pub struct Mold<ErrStream>
+where
+    ErrStream: std::io::Write,
+{
     heap: Heap,
-    builtin: Builtin,
+    errors: RefCell<ErrStream>,
 }
 
-impl Mold {
-    pub fn new() -> Mold {
+impl<ErrStream> Mold<ErrStream>
+where
+    ErrStream: std::io::Write,
+{
+    pub fn new(error_stream: ErrStream) -> Mold<ErrStream> {
         let heap = Heap::new();
-        let builtin = Builtin::new(&heap);
-        Mold { heap, builtin }
+        Mold {
+            heap,
+            errors: RefCell::new(error_stream),
+        }
     }
 
-    // FIXME: Figure out error reporting
-    pub fn interpret(&mut self, module: &str, source: &str) {
+    // Returns `true` on success, `false` on failure.
+    pub fn interpret(&mut self, module: &str, source: &str) -> bool {
         let mut lexer = Lexer::new(source);
         loop {
+            /*
             let (expression, line_number) = match read(&mut lexer, &self.heap) {
                 ReaderResult::Eof => break,
                 ReaderResult::Error {
@@ -54,9 +63,14 @@ impl Mold {
                     line_number,
                 } => (expression, line_number),
             };
-            // FIXME: Report error here
-            let chunk = compile(module, line_number, expression, self).unwrap();
-            println!("Chunk: {:?}", *chunk);
+            */
+            match compile(module, &mut lexer, self) {
+                CompilerResult::Eof => break true,
+                CompilerResult::HadError => break false,
+                CompilerResult::Chunk(chunk) => {
+                    println!("Chunk:\n{:?}", *chunk);
+                }
+            }
         }
     }
 }

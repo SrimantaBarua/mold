@@ -29,7 +29,6 @@ struct LineNumber {
 }
 
 pub struct Chunk {
-    name: String,
     opcodes: Vec<u8>,
     lines: Vec<LineNumber>,
     constants: Vec<ValueStore>,
@@ -40,9 +39,8 @@ impl MoldObject for Chunk {
 }
 
 impl Chunk {
-    pub fn new(name: impl ToString, heap: &Heap) -> Ptr<'_, Chunk> {
+    pub fn new(heap: &Heap) -> Ptr<'_, Chunk> {
         heap.new_object(Chunk {
-            name: name.to_string(),
             opcodes: Vec::new(),
             lines: Vec::new(),
             constants: Vec::new(),
@@ -143,7 +141,6 @@ impl Chunk {
 impl std::fmt::Debug for Chunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (mut ip, mut last_line) = (0, usize::MAX);
-        write!(f, "{}:\n", self.name)?;
         while ip < self.opcodes.len() {
             write!(f, "{:#12x}: ", ip)?;
             let line = self.get_line_at_offset(ip);

@@ -1,6 +1,7 @@
-use crate::heap::Cons;
-use crate::{Chunk, Mold, Op, Ptr, Value, ValueType};
+use crate::lexer::{Token, TokenType};
+use crate::{Chunk, Lexer, Mold, Op, Ptr, Value, ValueType};
 
+/*
 #[derive(Debug)]
 pub enum CompilerError<'a> {
     CarIsNotSymbol(Ptr<'a, Cons>),
@@ -111,18 +112,132 @@ impl<'a> Compiler<'a> {
         }
     }
 }
+*/
 
-pub fn compile<'a>(
-    name: impl ToString,
-    line_number: usize,
-    expression: Value<'a>,
-    mold: &'a Mold,
-) -> Result<Ptr<'a, Chunk>, CompilerError<'a>> {
-    let mut compiler = Compiler {
-        chunk: Chunk::new(name, &mold.heap),
-        line_number,
-        mold,
+pub enum CompilerResult<'a> {
+    Eof,
+    HadError,
+    Chunk(Ptr<'a, Chunk>),
+}
+
+struct Compiler<'a, 'b, ErrStream>
+where
+    ErrStream: std::io::Write,
+    'a: 'b,
+{
+    module: &'a str,
+    current: Token<'a>,
+    chunk: Ptr<'b, Chunk>,
+    lexer: &'b mut Lexer<'a>,
+    mold: &'b Mold<ErrStream>,
+    had_error: bool,
+    in_panic_mode: bool,
+}
+
+macro_rules! compiler_error {
+    ($compiler:expr, $($arg:tt)*) => {{ $compiler.error_fmt(format_args!($($arg)*)) }};
+}
+
+impl<'a, 'b, ErrStream> Compiler<'a, 'b, ErrStream>
+where
+    ErrStream: std::io::Write,
+    'a: 'b,
+{
+    fn expression(&mut self, is_top_level: bool) {
+        match &self.current.typ {
+            TokenType::LeftParen => self.list(is_top_level),
+            TokenType::RightParen => {
+                compiler_error!(self, "unexpected ')' at the start of an expression")
+            }
+            TokenType::True => self.push_constant_op(Value::t(), self.current.line_number),
+            TokenType::False => self.push_constant_op(Value::f(), self.current.line_number),
+            TokenType::Quote => unimplemented!("quote"),
+            TokenType::QuasiQuote => unimplemented!("quasiquote"),
+            TokenType::Unquote => unimplemented!("unquote"),
+            TokenType::UnquoteSplicing => unimplemented!("unquote-splicing"),
+            TokenType::Dot => compiler_error!(self, "unexpected '.' at the start of an expression"),
+            TokenType::Integer(i) => {
+                self.push_constant_op(Value::int(*i), self.current.line_number)
+            }
+            TokenType::Double(f) => {
+                self.push_constant_op(Value::double(*f), self.current.line_number)
+            }
+            TokenType::String(s) => self.push_constant_op(
+                Value::str(self.mold.heap.new_str(s)),
+                self.current.line_number,
+            ),
+            TokenType::Identifier(i) => unimplemented!("identifier"),
+            TokenType::Error(message) => compiler_error!(self, "{}", message.clone()),
+        }
+    }
+
+    fn list(&mut self, is_top_level: bool) {
+        unimplemented!()
+    }
+
+    fn push_constant_op(&mut self, value: Value<'b>, line_number: usize) {
+        let index = self.chunk.push_constant(value);
+        match index {
+            0 => self.chunk.push_op(Op::Const0, line_number),
+            1 => self.chunk.push_op(Op::Const1, line_number),
+            2 => self.chunk.push_op(Op::Const2, line_number),
+            3 => self.chunk.push_op(Op::Const3, line_number),
+            4 => self.chunk.push_op(Op::Const4, line_number),
+            5 => self.chunk.push_op(Op::Const5, line_number),
+            6 => self.chunk.push_op(Op::Const6, line_number),
+            7 => self.chunk.push_op(Op::Const7, line_number),
+            8..=263 => {
+                self.chunk.push_op(Op::Const1B, line_number);
+                self.chunk.push_u8((index - 8) as u8, line_number);
+            }
+            264..=65799 => {
+                self.chunk.push_op(Op::Const2B, line_number);
+                self.chunk.push_u16((index - 264) as u16, line_number);
+            }
+            _ => panic!("constant indices >= 65800 unsupported"),
+        }
+    }
+
+    fn error_fmt(&mut self, args: core::fmt::Arguments<'_>) {
+        self.in_panic_mode = true;
+        self.had_error = true;
+        write!(
+            self.mold.errors.borrow_mut(),
+            "compiler error: {}:{}: {}\n",
+            self.module,
+            self.current.line_number,
+            args
+        )
+        .unwrap()
+    }
+}
+
+pub fn compile<'a, 'b, ErrStream>(
+    module: &'a str,
+    lexer: &'b mut Lexer<'a>,
+    mold: &'b Mold<ErrStream>,
+) -> CompilerResult<'b>
+where
+    ErrStream: std::io::Write,
+    'a: 'b,
+{
+    let current = match lexer.next() {
+        None => return CompilerResult::Eof,
+        Some(tok) => tok,
     };
-    compiler.expression(expression)?;
-    Ok(compiler.chunk)
+    let chunk = Chunk::new(&mold.heap);
+    let mut compiler = Compiler {
+        module,
+        current,
+        chunk,
+        lexer,
+        mold,
+        had_error: false,
+        in_panic_mode: false,
+    };
+    compiler.expression(true);
+    if compiler.had_error {
+        return CompilerResult::HadError;
+    }
+    CompilerResult::Chunk(compiler.chunk)
 }
