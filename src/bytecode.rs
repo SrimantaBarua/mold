@@ -18,8 +18,9 @@ pub enum Op {
     Const7,
     Const1B, // index = next u8 + 8 = 8..=263
     Const2B, // index = next u16 + 8 + 256 = 264..=65799
-    // Binary operations
-    Add,
+    // Global variables (within the current module)
+    SetGlobal,
+    GetGlobal,
 }
 
 #[derive(Debug)]
@@ -82,7 +83,8 @@ impl Chunk {
             10 => Op::Const7,
             11 => Op::Const1B,
             12 => Op::Const2B,
-            13 => Op::Add,
+            13 => Op::SetGlobal,
+            14 => Op::GetGlobal,
             b => panic!("invalid opcode: {}", b),
         }
     }
@@ -173,7 +175,8 @@ impl std::fmt::Debug for Chunk {
                     ip += 2;
                     self.print_constant_op("OP_CONST2B", index, f)?;
                 }
-                Op::Add => f.write_str("OP_ADD\n")?,
+                Op::SetGlobal => f.write_str("OP_SETGLOBAL\n")?,
+                Op::GetGlobal => f.write_str("OP_GETGLOBAL\n")?,
             }
         }
         Ok(())

@@ -144,7 +144,7 @@ where
                 Value::str(self.mold.heap.new_str(s)),
                 self.current.line_number,
             ),
-            TokenType::Identifier(i) => unimplemented!("identifier"),
+            TokenType::Identifier(i) => self.get_symbol_value(i),
             TokenType::Error(message) => self.error_at_current_token(message.clone(), None),
         }
     }
@@ -170,7 +170,9 @@ where
         }
     }
 
+    // TODO: Define local variable when inside a scope
     fn define(&mut self) {
+        let start_line_number = self.current.line_number;
         self.advance();
         let variable = match &self.current.typ {
             TokenType::Identifier(symbol) => *symbol,
@@ -182,7 +184,33 @@ where
                 "dummy"
             }
         };
+        self.push_constant_op(
+            Value::symbol(self.mold.heap.new_str(variable)),
+            self.current.line_number,
+        );
         self.advance();
+        if std::matches!(self.current.typ, TokenType::RightParen) {
+            self.chunk.push_op(Op::Null, start_line_number);
+        } else {
+            self.expression();
+            self.advance();
+            if !std::matches!(self.current.typ, TokenType::RightParen) {
+                self.error_at_current_token(
+                    "too many arguments to `define`",
+                    HELP_DEFINE_EXTRA_ARGS,
+                );
+            }
+        }
+        self.chunk.push_op(Op::SetGlobal, start_line_number);
+    }
+
+    // TODO: Try to resolve local variables first
+    fn get_symbol_value(&mut self, symbol: &str) {
+        self.push_constant_op(
+            Value::symbol(self.mold.heap.new_str(symbol)),
+            self.current.line_number,
+        );
+        self.chunk.push_op(Op::GetGlobal, self.current.line_number);
     }
 
     fn function_or_macro_call(&mut self, symbol: &str) {
@@ -326,19 +354,24 @@ const HELP_DOTTED_PAIRS: Option<&str> = Some(
       | 1 |  -+--->| 2 |  -+--->| 3 | () |
       +-------+    +-------+    +--------+
       In summary, it's an error to have '.' anywhere but between the two last
-      elements in a list with at least two elements.
-",
+      elements in a list with at least two elements.\n",
 );
 const HELP_UNTERMINATED_EXPRESSION: Option<&str> =
     Some("\x1b[1mhelp\x1b[0m: Maybe you forgot a closing parenthesis? ')'\n");
 const HELP_NON_SYMBOL_FIRST_FORM: Option<&str> = Some(
     "\x1b[1mhelp\x1b[0m: The first form in a list form should be a symbol which evaluates to a
-      function or macro
-",
+      function or macro\n",
 );
 const HELP_DEFINE_VARIABLE_NOT_SYMBOL: Option<&str> = Some(
     "\x1b[1mhelp\x1b[0m: The first argument to \x1b[1;4mdefine\x1b[0m should be a symbol.
       \x1b[1;4mdefine\x1b[0m is a special form that is used to declare variables. Calling \x1b[1;4mdefine\x1b[0m
       in a top-level expression declares a \x1b[1mglobal\x1b[0m variable. Calling it within a
-      scope declares a \x1b[1mlocal\x1b[0m variable.",
+      scope declares a \x1b[1mlocal\x1b[0m variable.\n",
+);
+const HELP_DEFINE_EXTRA_ARGS: Option<&str> = Some(
+    "\x1b[1mhelp\x1b[0m: \x1b[1;4mdefine\x1b[0m takes 1 or 2 arguments. The first argument should be a symbol.
+      The second (optional) argument is an initial value to set for the
+      variable. For example -
+      (define foo)    \x1b[2m;; foo's value is ()\x1b[0m
+      (define bar 1)  \x1b[2m;; bar's value is 1\x1b[0m\n",
 );
