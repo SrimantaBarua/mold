@@ -245,6 +245,11 @@ where
     }
 
     fn report_error(&self, error: CompilerError<'_>) {
+        // If we're in panic recovery mode, then don't print further syntax errors while we
+        // "synchronize". This prevents error cascades which will only confuse a user.
+        if self.in_panic_mode.get() {
+            return;
+        }
         self.in_panic_mode.set(true);
         self.had_error.set(true);
         write!(
