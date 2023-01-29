@@ -55,21 +55,7 @@ impl<'a> CompilerError<'a> {
 
     fn source_lines(&self) -> String {
         let line_number_width = self.max_line_number_width();
-        let mut ret = String::new();
-        if self.line_number != 1 {
-            let prev_line_end = self.start_offset - self.line_offset - 1;
-            let prev_line_length = self.source[..prev_line_end]
-                .bytes()
-                .rev()
-                .position(|b| b == b'\n')
-                .unwrap_or(prev_line_end);
-            let prev_line_start = prev_line_end - prev_line_length;
-            ret.push_str(&format!(
-                "{:line_number_width$} |  {}\n",
-                self.line_number - 1,
-                &self.source[prev_line_start..prev_line_end]
-            ));
-        }
+        let mut ret = format!("\x1b[1;34m{:line_number_width$} |\x1b[0m\n", "",);
         let mut cursor = self.start_offset - self.line_offset;
         let mut line_number = self.line_number;
         while cursor < self.end_offset {
@@ -78,7 +64,7 @@ impl<'a> CompilerError<'a> {
                 .position(|b| b == b'\n')
                 .unwrap_or(self.source[cursor..].len());
             ret.push_str(&format!(
-                "{:line_number_width$} |  {}\n",
+                "\x1b[1;34m{:line_number_width$} |\x1b[0m  {}\n",
                 line_number,
                 &self.source[cursor..cursor + line_length]
             ));
@@ -93,24 +79,13 @@ impl<'a> CompilerError<'a> {
                 line_length
             };
             ret.push_str(&format!(
-                "{:line_number_width$} |  {}{}\n",
+                "{:line_number_width$} \x1b[1;34m|  {}\x1b[31m{}\x1b[0m\n",
                 "",
                 " ".repeat(error_start),
                 "^".repeat(error_end - error_start)
             ));
             cursor += line_length + 1;
             line_number += 1;
-        }
-        if cursor < self.source.len() {
-            let line_length = self.source[cursor..]
-                .bytes()
-                .position(|b| b == b'\n')
-                .unwrap_or(self.source[cursor..].len());
-            ret.push_str(&format!(
-                "{:line_number_width$} |  {}\n",
-                line_number,
-                &self.source[cursor..cursor + line_length]
-            ));
         }
         ret
     }
@@ -142,21 +117,23 @@ where
     ErrStream: std::io::Write,
     'a: 'b,
 {
-    fn expression(&mut self, is_top_level: bool) {
+    fn expression(&mut self) {
         match &self.current.typ {
-            TokenType::LeftParen => self.list(is_top_level),
-            TokenType::RightParen => {
-                self.error_at_current("unbalanced closing parenthesis ')'", UNBALANCED_PARENS_HELP)
-            }
+            TokenType::LeftParen => self.list(),
+            TokenType::RightParen => self.error_at_current_token(
+                "unbalanced closing parenthesis ')'",
+                HELP_UNBALANCED_PARENS,
+            ),
             TokenType::True => self.push_constant_op(Value::t(), self.current.line_number),
             TokenType::False => self.push_constant_op(Value::f(), self.current.line_number),
             TokenType::Quote => unimplemented!("quote"),
             TokenType::QuasiQuote => unimplemented!("quasiquote"),
             TokenType::Unquote => unimplemented!("unquote"),
             TokenType::UnquoteSplicing => unimplemented!("unquote-splicing"),
-            TokenType::Dot => {
-                self.error_at_current("incorrent use of dotted pair syntax '.'", DOTTED_PAIRS_HELP)
-            }
+            TokenType::Dot => self.error_at_current_token(
+                "incorrent use of dotted pair syntax '.'",
+                HELP_DOTTED_PAIRS,
+            ),
             TokenType::Integer(i) => {
                 self.push_constant_op(Value::int(*i), self.current.line_number)
             }
@@ -168,22 +145,44 @@ where
                 self.current.line_number,
             ),
             TokenType::Identifier(i) => unimplemented!("identifier"),
-            TokenType::Error(message) => self.error_at_current(message.clone(), None),
+            TokenType::Error(message) => self.error_at_current_token(message.clone(), None),
         }
     }
 
-    fn list(&mut self, is_top_level: bool) {
+    fn list(&mut self) {
         // TODO: Pop this off the stack when we get a closing parenthesis. Also pop when doing
         //       panic recovery.
         self.subexpr_start_stack.push(self.current.start);
         self.advance();
         let symbol = match &self.current.typ {
             TokenType::Identifier(symbol) => *symbol,
-            _ => return self.error_at_current("CAR of list form should be a symbol", None),
+            t => {
+                self.error_at_current_token(
+                    format!("expected symbol, found {}", t.to_str()),
+                    HELP_NON_SYMBOL_FIRST_FORM,
+                );
+                "dummy"
+            }
         };
         match symbol {
+            "define" => self.define(),
             _ => self.function_or_macro_call(symbol),
         }
+    }
+
+    fn define(&mut self) {
+        self.advance();
+        let variable = match &self.current.typ {
+            TokenType::Identifier(symbol) => *symbol,
+            t => {
+                self.error_at_current_token(
+                    format!("expected symbol, found {}", t.to_str()),
+                    HELP_DEFINE_VARIABLE_NOT_SYMBOL,
+                );
+                "dummy"
+            }
+        };
+        self.advance();
     }
 
     fn function_or_macro_call(&mut self, symbol: &str) {
@@ -191,21 +190,12 @@ where
     }
 
     fn advance(&mut self) {
-        let last_subexpr_start = self
-            .subexpr_start_stack
-            .last()
-            .expect("bug: we should only have called advance if we're inside a sub-expression");
-        let source = self.lexer.source();
-        let end = source.len();
         match self.lexer.next() {
-            None => self.report_error(CompilerError::new(
-                self.module,
-                self.lexer.source(),
-                *last_subexpr_start,
-                end,
-                "unterminated expression".into(),
-                None,
-            )),
+            None => self.error_at_current_expression(
+                "unterminated expression",
+                self.lexer.source().len(),
+                HELP_UNTERMINATED_EXPRESSION,
+            ),
             Some(token) => self.current = token,
         }
     }
@@ -233,7 +223,31 @@ where
         }
     }
 
-    fn error_at_current(&self, message: impl Into<Cow<'static, str>>, help: Option<&'static str>) {
+    fn error_at_current_expression(
+        &self,
+        message: impl Into<Cow<'static, str>>,
+        source_end: usize,
+        help: Option<&'static str>,
+    ) {
+        let last_subexpr_start = self.subexpr_start_stack.last().expect(
+            "bug: we should only have called error_at_current_expression \
+                    if we're inside a sub-expression",
+        );
+        self.report_error(CompilerError::new(
+            self.module,
+            self.lexer.source(),
+            *last_subexpr_start,
+            source_end,
+            message.into(),
+            help,
+        ))
+    }
+
+    fn error_at_current_token(
+        &self,
+        message: impl Into<Cow<'static, str>>,
+        help: Option<&'static str>,
+    ) {
         self.report_error(CompilerError::new(
             self.module,
             self.lexer.source(),
@@ -254,7 +268,7 @@ where
         self.had_error.set(true);
         write!(
             self.mold.errors.borrow_mut(),
-            "error: {}\n  --> {}:{}:{}\n{}{}\n",
+            "\x1b[1;31merror\x1b[39m: {}\x1b[0m\n  \x1b[1;34m-->\x1b[0m {}:{}:{}\n{}{}\n",
             error.message,
             error.module,
             error.line_number,
@@ -290,18 +304,18 @@ where
         subexpr_start_stack: Vec::new(),
         in_panic_mode: Cell::new(false),
     };
-    compiler.expression(true);
+    compiler.expression();
     if compiler.had_error.get() {
         return CompilerResult::HadError;
     }
     CompilerResult::Chunk(compiler.chunk)
 }
 
-const UNBALANCED_PARENS_HELP: Option<&str> = Some("help: Try removing the closing parenthesis\n");
-const DOTTED_PAIRS_HELP: Option<&str> = Some(
-    r#"help: Dotted pair syntax is a way to represent the CAR and CDR of a cons
-      explicitly. For instance (1 . 2) denotes a cons cell where the CAR is 1
-      and the CDR is 2. This looks like -
+const HELP_UNBALANCED_PARENS: Option<&str> = Some("help: Try removing the closing parenthesis\n");
+const HELP_DOTTED_PAIRS: Option<&str> = Some(
+    "\x1b[1mhelp\x1b[0m: Dotted pair syntax is a way to represent the \x1b[1;4mcar\x1b[0m and \x1b[1;4mcdr\x1b[0m of a cons
+      explicitly. For instance (1 . 2) denotes a cons cell where the \x1b[1;4mcar\x1b[0m is 1
+      and the \x1b[1;4mcdr\x1b[0m is 2. This looks like -
       +-------+
       | 1 | 2 |
       +-------+
@@ -313,5 +327,18 @@ const DOTTED_PAIRS_HELP: Option<&str> = Some(
       +-------+    +-------+    +--------+
       In summary, it's an error to have '.' anywhere but between the two last
       elements in a list with at least two elements.
-"#,
+",
+);
+const HELP_UNTERMINATED_EXPRESSION: Option<&str> =
+    Some("\x1b[1mhelp\x1b[0m: Maybe you forgot a closing parenthesis? ')'\n");
+const HELP_NON_SYMBOL_FIRST_FORM: Option<&str> = Some(
+    "\x1b[1mhelp\x1b[0m: The first form in a list form should be a symbol which evaluates to a
+      function or macro
+",
+);
+const HELP_DEFINE_VARIABLE_NOT_SYMBOL: Option<&str> = Some(
+    "\x1b[1mhelp\x1b[0m: The first argument to \x1b[1;4mdefine\x1b[0m should be a symbol.
+      \x1b[1;4mdefine\x1b[0m is a special form that is used to declare variables. Calling \x1b[1;4mdefine\x1b[0m
+      in a top-level expression declares a \x1b[1mglobal\x1b[0m variable. Calling it within a
+      scope declares a \x1b[1mlocal\x1b[0m variable.",
 );

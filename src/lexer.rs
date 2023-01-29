@@ -19,6 +19,27 @@ pub enum TokenType<'a> {
     Error(String),
 }
 
+impl<'a> TokenType<'a> {
+    pub(crate) fn to_str(&self) -> &'static str {
+        match self {
+            TokenType::LeftParen => "'('",
+            TokenType::RightParen => "')'",
+            TokenType::True => "'#t'",
+            TokenType::False => "'#f'",
+            TokenType::Quote => "'\''",
+            TokenType::QuasiQuote => "'`'",
+            TokenType::Unquote => "','",
+            TokenType::UnquoteSplicing => "',@'",
+            TokenType::Dot => "'.'",
+            TokenType::Integer(_) => "number",
+            TokenType::Double(_) => "number",
+            TokenType::String(_) => "string",
+            TokenType::Identifier(_) => "symbol",
+            TokenType::Error(_) => "error token",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Token<'a> {
     pub(crate) typ: TokenType<'a>,
