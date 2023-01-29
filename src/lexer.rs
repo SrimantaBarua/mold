@@ -23,6 +23,8 @@ pub enum TokenType<'a> {
 pub struct Token<'a> {
     pub(crate) typ: TokenType<'a>,
     pub(crate) line_number: usize,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 pub struct Lexer<'a> {
@@ -102,6 +104,10 @@ impl<'a> Lexer<'a> {
             start_offset: 0,
             iter: source.char_indices().peekable(),
         }
+    }
+
+    pub(crate) fn source(&self) -> &'a str {
+        self.source
     }
 
     fn identifier(&mut self) -> Token<'a> {
@@ -189,6 +195,8 @@ impl<'a> Lexer<'a> {
                     return Token {
                         typ: TokenType::String(&self.source[self.start_offset + 1..end]),
                         line_number: start_line,
+                        start: self.start_offset + 1,
+                        end,
                     };
                 }
                 _ => {}
@@ -200,13 +208,17 @@ impl<'a> Lexer<'a> {
                 &self.source[self.start_offset..]
             )),
             line_number: start_line,
+            start: self.start_offset,
+            end: self.source.len(),
         }
     }
 
-    fn make_token(&self, typ: TokenType<'a>) -> Token<'a> {
+    fn make_token(&mut self, typ: TokenType<'a>) -> Token<'a> {
         Token {
             typ,
             line_number: self.line_number,
+            start: self.start_offset,
+            end: self.current_offset(),
         }
     }
 
