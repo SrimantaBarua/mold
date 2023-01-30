@@ -149,10 +149,20 @@ where
         }
     }
 
-    fn list(&mut self) {
-        // TODO: Pop this off the stack when we get a closing parenthesis. Also pop when doing
-        //       panic recovery.
+    fn start_expression(&mut self) {
+        self.in_panic_mode.set(false);
         self.subexpr_start_stack.push(self.current.start);
+    }
+
+    fn end_expression(&mut self) {
+        self.in_panic_mode.set(false);
+        self.subexpr_start_stack
+            .pop()
+            .expect("bug: we weren't parsing an expression");
+    }
+
+    fn list(&mut self) {
+        self.start_expression();
         self.advance();
         let symbol = match &self.current.typ {
             TokenType::Identifier(symbol) => *symbol,
@@ -168,6 +178,7 @@ where
             "define" => self.define(),
             _ => self.function_or_macro_call(symbol),
         }
+        self.end_expression();
     }
 
     // TODO: Define local variable when inside a scope
