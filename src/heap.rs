@@ -232,7 +232,7 @@ impl<'a> Value<'a> {
 impl<'a> std::fmt::Debug for Value<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut strukt = f.debug_struct("Value");
-        strukt.field("raw", &self.0 .0);
+        strukt.field("raw", &format_args!("{:#x}", self.0 .0));
         match self.typ() {
             ValueType::Null | ValueType::True | ValueType::False => {
                 strukt.field("typ", &self.typ())
@@ -252,6 +252,7 @@ pub trait MoldObject: std::fmt::Debug {
 }
 
 #[derive(Debug)]
+#[repr(C)]
 struct RootMarker {
     previous: NonNull<RootMarker>,
     next: NonNull<RootMarker>,
@@ -298,16 +299,8 @@ impl RootMarker {
 
 pub struct Root<T>(NonNull<RootMarker>, PhantomData<T>);
 
-impl<T> Root<T> {
-    pub fn ptr_eq(&self, other: Ptr<'_, T>) -> bool {
-        std::ptr::eq(
-            // Safe because the root's pointer stays valid
-            unsafe { self.0.as_ref().object.cast().as_ptr() },
-            other.0.as_ptr(),
-        )
-    }
-}
-
+// FIXME: This would be UNSAFE if we use a copying garbage collector, since the underlying object
+//        pointer would move.
 impl<T> Deref for Root<T> {
     type Target = T;
 
@@ -317,6 +310,8 @@ impl<T> Deref for Root<T> {
     }
 }
 
+// FIXME: This would be UNSAFE if we use a copying garbage collector, since the underlying object
+//        pointer would move.
 impl<T> DerefMut for Root<T> {
     fn deref_mut(&mut self) -> &mut T {
         // Safe because we know Root<T> hasn't been GC'ed, and Object<T> is #[repr(C)]
@@ -345,6 +340,10 @@ pub struct Ptr<'a, T>(NonNull<Object<T>>, &'a PhantomData<()>);
 impl<'a, T> Ptr<'a, T> {
     pub fn ptr_eq(&self, other: Self) -> bool {
         std::ptr::eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+
+    pub(crate) fn downgrade(self) -> Gc<T> {
+        Gc(self.0)
     }
 
     pub(crate) unsafe fn extend_lifetime<'b>(&self) -> Ptr<'b, T> {
@@ -390,10 +389,43 @@ impl<'a, T> Clone for Ptr<'a, T> {
 impl<'a, T> Copy for Ptr<'a, T> {}
 
 #[derive(Debug)]
+pub(crate) struct Gc<T>(NonNull<Object<T>>);
+
+impl<T> Gc<T> {
+    pub(crate) unsafe fn to_ptr<'a>(&self) -> Ptr<'a, T> {
+        Ptr(self.0, &PhantomData)
+    }
+}
+
+impl<T> Clone for Gc<T> {
+    fn clone(&self) -> Self {
+        Gc(self.0)
+    }
+}
+
+impl<T> Copy for Gc<T> {}
+
+// Gc<Str> needs to be a hash key
+impl PartialEq for Gc<Str> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+}
+
+impl Eq for Gc<Str> {}
+
+impl Hash for Gc<Str> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.as_ptr().hash(state)
+    }
+}
+
+#[derive(Debug)]
 pub enum ObjectType {
     Cons,
     Str,
     Chunk,
+    Fiber,
 }
 
 struct ObjectHeader {
@@ -443,6 +475,12 @@ impl MoldObject for Cons {
 #[derive(Debug)]
 pub struct Str(String);
 
+impl Str {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl MoldObject for Str {
     const TYPE: ObjectType = ObjectType::Str;
 }
@@ -450,7 +488,7 @@ impl MoldObject for Str {
 #[derive(Debug)]
 pub struct Heap {
     objects: Cell<*mut ObjectHeader>,
-    roots: RefCell<RootMarker>,
+    roots: Box<RefCell<RootMarker>>,
     interner: RefCell<Interner>,
 }
 
@@ -461,9 +499,11 @@ impl Heap {
             interner: RefCell::new(Interner::new()),
             // This is a dummy root marker, so having the object pointer be dangling is okay.
             // This is safe because we call `initialize` right after.
-            roots: RefCell::new(unsafe { RootMarker::uninitialized(NonNull::dangling()) }),
+            roots: Box::new(RefCell::new(unsafe {
+                RootMarker::uninitialized(NonNull::dangling())
+            })),
         };
-        heap.roots.borrow_mut().initialize();
+        heap.roots.get_mut().initialize();
         heap
     }
 

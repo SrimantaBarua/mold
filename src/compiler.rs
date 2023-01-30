@@ -321,7 +321,7 @@ where
         None => return CompilerResult::Eof,
         Some(tok) => tok,
     };
-    let chunk = Chunk::new(&mold.heap);
+    let chunk = Chunk::new(mold.heap.new_str(module), &mold.heap);
     let mut compiler = Compiler {
         module,
         current,

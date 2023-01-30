@@ -1,3 +1,4 @@
+use crate::heap::{Gc, Str};
 use crate::{Heap, MoldObject, ObjectType, Ptr, Value, ValueStore};
 
 #[derive(Debug)]
@@ -30,6 +31,7 @@ struct LineNumber {
 }
 
 pub struct Chunk {
+    module: Gc<Str>,
     opcodes: Vec<u8>,
     lines: Vec<LineNumber>,
     constants: Vec<ValueStore>,
@@ -40,12 +42,22 @@ impl MoldObject for Chunk {
 }
 
 impl Chunk {
-    pub fn new(heap: &Heap) -> Ptr<'_, Chunk> {
+    pub fn new<'a>(module: Ptr<'_, Str>, heap: &'a Heap) -> Ptr<'a, Chunk> {
         heap.new_object(Chunk {
+            module: module.downgrade(),
             opcodes: Vec::new(),
             lines: Vec::new(),
             constants: Vec::new(),
         })
+    }
+
+    pub fn code_len(&self) -> usize {
+        self.opcodes.len()
+    }
+
+    pub fn module(&self) -> Ptr<'_, Str> {
+        // Safe provided Chunk is heap-allocated.
+        unsafe { self.module.to_ptr() }
     }
 
     pub fn push_op(&mut self, op: Op, line_number: usize) {
