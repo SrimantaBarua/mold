@@ -97,6 +97,14 @@ pub enum CompilerResult<'a> {
     Chunk(Ptr<'a, Chunk>),
 }
 
+#[derive(Clone)]
+struct Local<'a> {
+    name: &'a str,
+    scope_depth: usize,
+    visible: bool,
+    initialized: bool,
+}
+
 struct Compiler<'a, 'b, ErrStream>
 where
     ErrStream: std::io::Write,
@@ -108,6 +116,8 @@ where
     lexer: &'b mut Lexer<'a>,
     mold: &'b Mold<ErrStream>,
     subexpr_start_stack: Vec<usize>,
+    locals: Vec<Local<'a>>,
+    scope_depth: usize,
     had_error: Cell<bool>,
     in_panic_mode: Cell<bool>,
 }
@@ -176,9 +186,49 @@ where
         };
         match symbol {
             "define" => self.define(),
+            "let" => self.let_(),
+            /*
+            "let*" => self.let_(),
+            "letrec" => self.let_(),
+            "letrec*" => self.let_(),
+            */
             _ => self.function_or_macro_call(symbol),
         }
         self.end_expression();
+    }
+
+    fn declare_variable(
+        &mut self,
+        name: &'a str,
+        visible: bool,
+        initialized: bool,
+    ) -> Option<usize> {
+        if self.scope_depth == 0 {
+            // We're declaring a global variable. It's a no-op
+            return None;
+        }
+        // Validate that there is no local variable at the same scope depth with the same name.
+        if self
+            .locals
+            .iter()
+            .rev()
+            .take_while(|local| local.scope_depth == self.scope_depth)
+            .find(|local| local.name == name)
+            .is_some()
+        {
+            self.error_at_current_token(
+                format!("cannot rebind '{}' in the same scope", name),
+                HELP_LET_BINDING_REBOUND,
+            );
+        }
+        // Push local
+        self.locals.push(Local {
+            name,
+            scope_depth: self.scope_depth,
+            visible,
+            initialized,
+        });
+        Some(self.locals.len() - 1)
     }
 
     // TODO: Define local variable when inside a scope
@@ -195,10 +245,14 @@ where
                 "dummy"
             }
         };
-        self.push_constant_op(
-            Value::symbol(self.mold.heap.new_str(variable)),
-            self.current.line_number,
-        );
+        let index = self.declare_variable(variable, true, false);
+        if index.is_none() {
+            // This is a global variable
+            self.push_constant_op(
+                Value::symbol(self.mold.heap.new_str(variable)),
+                self.current.line_number,
+            );
+        }
         self.advance();
         if std::matches!(self.current.typ, TokenType::RightParen) {
             self.chunk.push_op(Op::Null, start_line_number);
@@ -212,16 +266,162 @@ where
                 );
             }
         }
-        self.chunk.push_op(Op::SetGlobal, start_line_number);
+        if let Some(index) = index {
+            // This is a local variable
+            self.locals[index].initialized = true;
+            // We need to simulate the effect of "define" which returns the symbol that was bound.
+            self.push_constant_op(
+                Value::symbol(self.mold.heap.new_str(variable)),
+                self.current.line_number,
+            );
+        } else {
+            // Global variable
+            self.chunk.push_op(Op::SetGlobal, start_line_number);
+        }
     }
 
-    // TODO: Try to resolve local variables first
+    fn begin_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    fn end_scope(&mut self) {
+        self.scope_depth -= 1;
+        let num_locals_in_scope = self
+            .locals
+            .iter()
+            .rev()
+            .take_while(|local| local.scope_depth > self.scope_depth)
+            .count();
+        if num_locals_in_scope == 0 {
+            return;
+        }
+        // A bit of trickery. Say we have N locals in this scope. We'll actually have N+1 values on
+        // the stack for this scope, since the last value is the result of the last expression. We
+        // want to retain that last value and pop off the locals before it.
+        // So we set the 0th local in the scope to the N+1th value (which pops off the N+1th
+        // value). Now we're left with N values on the stack. We want to pop off N-1 of then
+        // (because the 0th is the return value).
+        let return_index = self.locals.len() - num_locals_in_scope;
+        self.set_local(return_index, self.current.line_number);
+        self.locals.truncate(return_index);
+        for _ in 1..num_locals_in_scope {
+            self.chunk.push_op(Op::Pop, self.current.line_number);
+        }
+    }
+
+    fn let_(&mut self) {
+        self.advance();
+        self.begin_scope();
+        // Bindings
+        if std::matches!(self.current.typ, TokenType::LeftParen) {
+            self.advance();
+        } else {
+            self.error_at_current_expression(
+                "`let` form missing bindings",
+                self.current.end,
+                HELP_LET_MISSING_BINDINGS,
+            );
+        }
+        while !std::matches!(self.current.typ, TokenType::RightParen) {
+            if std::matches!(self.current.typ, TokenType::LeftParen) {
+                self.advance();
+            } else {
+                self.error_at_current_token(
+                    "malformed let binding",
+                    HELP_LET_BINDING_DOES_NOT_START_WITH_PAREN,
+                );
+            }
+            if let TokenType::Identifier(variable) = self.current.typ {
+                self.declare_variable(variable, false, false);
+                self.advance();
+            } else {
+                self.error_at_current_token(
+                    "malformed let binding",
+                    HELP_LET_BINDING_FIRST_IS_NOT_IDENTIFIER,
+                );
+            };
+            self.expression();
+            self.advance();
+            if std::matches!(self.current.typ, TokenType::RightParen) {
+                self.in_panic_mode.set(false);
+                self.advance();
+            } else {
+                self.error_at_current_token(
+                    "malformed let binding",
+                    HELP_LET_BINDING_DOES_NOT_END_WITH_PAREN,
+                );
+            }
+        }
+        self.advance();
+        // Mark all locals visible and initialized
+        self.locals
+            .iter_mut()
+            .rev()
+            .take_while(|local| local.scope_depth == self.scope_depth)
+            .for_each(|local| {
+                local.visible = true;
+                local.initialized = true;
+            });
+        let mut first = true;
+        while !std::matches!(self.current.typ, TokenType::RightParen) {
+            if !first {
+                self.chunk.push_op(Op::Pop, self.current.line_number);
+            }
+            self.expression();
+            self.advance();
+            first = false;
+        }
+        if first {
+            // There were no expressions in the body
+            self.chunk.push_op(Op::Null, self.current.line_number);
+        }
+        self.end_scope();
+    }
+
+    fn set_local(&mut self, index: usize, line_number: usize) {
+        match index {
+            0..=255 => {
+                self.chunk.push_op(Op::SetLocal1B, line_number);
+                self.chunk.push_u8(index as u8, line_number);
+            }
+            256..=65791 => {
+                self.chunk.push_op(Op::SetLocal2B, line_number);
+                self.chunk.push_u16((index - 256) as u16, line_number);
+            }
+            _ => panic!("local variables >= 65792 unsupported"),
+        }
+    }
+
+    fn get_local(&mut self, index: usize, line_number: usize) {
+        match index {
+            0..=255 => {
+                self.chunk.push_op(Op::GetLocal1B, line_number);
+                self.chunk.push_u8(index as u8, line_number);
+            }
+            256..=65791 => {
+                self.chunk.push_op(Op::GetLocal2B, line_number);
+                self.chunk.push_u16((index - 256) as u16, line_number);
+            }
+            _ => panic!("local variables >= 65792 unsupported"),
+        }
+    }
+
     fn get_symbol_value(&mut self, symbol: &str) {
-        self.push_constant_op(
-            Value::symbol(self.mold.heap.new_str(symbol)),
-            self.current.line_number,
-        );
-        self.chunk.push_op(Op::GetGlobal, self.current.line_number);
+        if let Some(index) = self
+            .locals
+            .iter()
+            .rev()
+            .position(|local| local.visible && local.name == symbol)
+            .map(|index| self.locals.len() - index - 1)
+        {
+            self.get_local(index, self.current.line_number);
+        } else {
+            self.push_constant_op(
+                Value::symbol(self.mold.heap.new_str(symbol)),
+                self.current.line_number,
+            );
+            self.chunk.push_op(Op::GetGlobal, self.current.line_number);
+        }
     }
 
     fn function_or_macro_call(&mut self, symbol: &str) {
@@ -331,6 +531,8 @@ where
         chunk,
         lexer,
         mold,
+        locals: Vec::new(),
+        scope_depth: 0,
         had_error: Cell::new(false),
         subexpr_start_stack: Vec::new(),
         in_panic_mode: Cell::new(false),
@@ -378,3 +580,8 @@ const HELP_DEFINE_EXTRA_ARGS: Option<&str> = Some(
       (define foo)    \x1b[2m;; foo's value is ()\x1b[0m
       (define bar 1)  \x1b[2m;; bar's value is 1\x1b[0m\n",
 );
+const HELP_LET_MISSING_BINDINGS: Option<&str> = None; // TODO
+const HELP_LET_BINDING_DOES_NOT_START_WITH_PAREN: Option<&str> = None; // TODO
+const HELP_LET_BINDING_DOES_NOT_END_WITH_PAREN: Option<&str> = None; // TODO
+const HELP_LET_BINDING_FIRST_IS_NOT_IDENTIFIER: Option<&str> = None; // TODO
+const HELP_LET_BINDING_REBOUND: Option<&str> = None; // TODO

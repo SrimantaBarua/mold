@@ -111,13 +111,18 @@ where
                 Op::Null => self.fiber.stack_push(Value::null()),
                 Op::True => self.fiber.stack_push(Value::t()),
                 Op::False => self.fiber.stack_push(Value::f()),
+                Op::Pop => {
+                    self.fiber
+                        .stack_pop()
+                        .expect("bug: stack underflow: OP_POP");
+                }
                 Op::Const1B => {
                     let value = chunk.get_constant(chunk.get_u8(ip) as usize);
                     ip += 1;
                     self.fiber.stack_push(value);
                 }
                 Op::Const2B => {
-                    let value = chunk.get_constant(chunk.get_u16(ip) as usize);
+                    let value = chunk.get_constant(chunk.get_u16(ip) as usize + 256);
                     ip += 2;
                     self.fiber.stack_push(value);
                 }
@@ -131,7 +136,7 @@ where
                         .stack_pop()
                         .expect("bug: stack underflow: OP_SETGLOBAL: variable")
                         .as_symbol()
-                        .expect("bug: OP_SETGLOBAL: variable is not a value");
+                        .expect("bug: OP_SETGLOBAL: variable is not a symbol");
                     self.mold.globals.set(module, variable, value);
                     self.fiber.stack_push(Value::symbol(variable));
                 }
@@ -139,9 +144,9 @@ where
                     let variable = self
                         .fiber
                         .stack_pop()
-                        .expect("bug: stack underflow: OP_GETGLOBAL: variable")
+                        .expect("bug: stack underflow: OP_GETGLOBAL")
                         .as_symbol()
-                        .expect("bug: OP_GETGLOBAL: variable is not a value");
+                        .expect("bug: OP_GETGLOBAL: variable is not a symbol");
                     match self.mold.globals.get(module, variable) {
                         Some(value) => self.fiber.stack_push(value),
                         None => {
@@ -152,6 +157,39 @@ where
                             self.fiber.stack_push(Value::null());
                         }
                     }
+                }
+                // FIXME: This has to be updated when we compile functions
+                Op::GetLocal1B => {
+                    let index = chunk.get_u8(ip) as usize;
+                    ip += 1;
+                    let value = self.fiber.value_stack.borrow()[index];
+                    // Safe because we have a reference to the fiber, so the value is reachable
+                    self.fiber.stack_push(unsafe { Value::new(value) });
+                }
+                Op::GetLocal2B => {
+                    let index = chunk.get_u16(ip) as usize + 256;
+                    ip += 2;
+                    let value = self.fiber.value_stack.borrow()[index];
+                    // Safe because we have a reference to the fiber, so the value is reachable
+                    self.fiber.stack_push(unsafe { Value::new(value) });
+                }
+                Op::SetLocal1B => {
+                    let index = chunk.get_u8(ip) as usize;
+                    ip += 1;
+                    let value = self
+                        .fiber
+                        .stack_pop()
+                        .expect("bug: stack underflow: OP_SETLOCAL");
+                    self.fiber.value_stack.borrow_mut()[index] = value.into_inner();
+                }
+                Op::SetLocal2B => {
+                    let index = chunk.get_u16(ip) as usize + 256;
+                    ip += 2;
+                    let value = self
+                        .fiber
+                        .stack_pop()
+                        .expect("bug: stack underflow: OP_SETLOCAL");
+                    self.fiber.value_stack.borrow_mut()[index] = value.into_inner();
                 }
             }
             current_frame.ip.set(ip);

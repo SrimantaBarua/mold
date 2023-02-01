@@ -8,12 +8,18 @@ pub enum Op {
     Null = 0,
     True,
     False,
+    Pop,
     // push constants from chunk on the stack
     Const1B, // index = next u8 = 0..=255
     Const2B, // index = next u16 + 256 = 256..=65791
     // Global variables (within the current module)
     SetGlobal,
     GetGlobal,
+    // Local variables
+    GetLocal1B,
+    GetLocal2B,
+    SetLocal1B,
+    SetLocal2B,
 }
 
 #[derive(Debug)]
@@ -77,10 +83,15 @@ impl Chunk {
             0 => Op::Null,
             1 => Op::True,
             2 => Op::False,
-            3 => Op::Const1B,
-            4 => Op::Const2B,
-            5 => Op::SetGlobal,
-            6 => Op::GetGlobal,
+            3 => Op::Pop,
+            4 => Op::Const1B,
+            5 => Op::Const2B,
+            6 => Op::SetGlobal,
+            7 => Op::GetGlobal,
+            8 => Op::GetLocal1B,
+            9 => Op::GetLocal2B,
+            10 => Op::SetLocal1B,
+            11 => Op::SetLocal2B,
             b => panic!("invalid opcode: {}", b),
         }
     }
@@ -153,18 +164,39 @@ impl std::fmt::Debug for Chunk {
                 Op::Null => f.write_str("OP_NULL\n")?,
                 Op::True => f.write_str("OP_TRUE\n")?,
                 Op::False => f.write_str("OP_FALSE\n")?,
+                Op::Pop => f.write_str("OP_POP\n")?,
                 Op::Const1B => {
                     let index = self.get_u8(ip) as usize;
                     ip += 1;
                     self.print_constant_op("OP_CONST1B", index, f)?;
                 }
                 Op::Const2B => {
-                    let index = self.get_u16(ip) as usize;
+                    let index = self.get_u16(ip) as usize + 256;
                     ip += 2;
                     self.print_constant_op("OP_CONST2B", index, f)?;
                 }
                 Op::SetGlobal => f.write_str("OP_SETGLOBAL\n")?,
                 Op::GetGlobal => f.write_str("OP_GETGLOBAL\n")?,
+                Op::GetLocal1B => {
+                    let index = self.get_u8(ip) as usize;
+                    ip += 1;
+                    write!(f, "OP_GETLOCAL1B {}\n", index)?;
+                }
+                Op::GetLocal2B => {
+                    let index = self.get_u16(ip) as usize + 256;
+                    ip += 2;
+                    write!(f, "OP_GETLOCAL2B {}\n", index)?;
+                }
+                Op::SetLocal1B => {
+                    let index = self.get_u8(ip) as usize;
+                    ip += 1;
+                    write!(f, "OP_SETLOCAL1B {}\n", index)?;
+                }
+                Op::SetLocal2B => {
+                    let index = self.get_u16(ip) as usize + 256;
+                    ip += 2;
+                    write!(f, "OP_SETLOCAL2B {}\n", index)?;
+                }
             }
         }
         Ok(())
