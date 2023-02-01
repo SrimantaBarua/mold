@@ -111,14 +111,6 @@ where
                 Op::Null => self.fiber.stack_push(Value::null()),
                 Op::True => self.fiber.stack_push(Value::t()),
                 Op::False => self.fiber.stack_push(Value::f()),
-                Op::Const0 => self.fiber.stack_push(chunk.get_constant(0)),
-                Op::Const1 => self.fiber.stack_push(chunk.get_constant(1)),
-                Op::Const2 => self.fiber.stack_push(chunk.get_constant(2)),
-                Op::Const3 => self.fiber.stack_push(chunk.get_constant(3)),
-                Op::Const4 => self.fiber.stack_push(chunk.get_constant(4)),
-                Op::Const5 => self.fiber.stack_push(chunk.get_constant(5)),
-                Op::Const6 => self.fiber.stack_push(chunk.get_constant(6)),
-                Op::Const7 => self.fiber.stack_push(chunk.get_constant(7)),
                 Op::Const1B => {
                     let value = chunk.get_constant(chunk.get_u8(ip) as usize);
                     ip += 1;

@@ -242,23 +242,15 @@ where
     fn push_constant_op(&mut self, value: Value<'b>, line_number: usize) {
         let index = self.chunk.push_constant(value);
         match index {
-            0 => self.chunk.push_op(Op::Const0, line_number),
-            1 => self.chunk.push_op(Op::Const1, line_number),
-            2 => self.chunk.push_op(Op::Const2, line_number),
-            3 => self.chunk.push_op(Op::Const3, line_number),
-            4 => self.chunk.push_op(Op::Const4, line_number),
-            5 => self.chunk.push_op(Op::Const5, line_number),
-            6 => self.chunk.push_op(Op::Const6, line_number),
-            7 => self.chunk.push_op(Op::Const7, line_number),
-            8..=263 => {
+            0..=255 => {
                 self.chunk.push_op(Op::Const1B, line_number);
-                self.chunk.push_u8((index - 8) as u8, line_number);
+                self.chunk.push_u8(index as u8, line_number);
             }
-            264..=65799 => {
+            256..=65791 => {
                 self.chunk.push_op(Op::Const2B, line_number);
-                self.chunk.push_u16((index - 264) as u16, line_number);
+                self.chunk.push_u16((index - 256) as u16, line_number);
             }
-            _ => panic!("constant indices >= 65800 unsupported"),
+            _ => panic!("constant indices >= 65792 unsupported"),
         }
     }
 

@@ -9,16 +9,8 @@ pub enum Op {
     True,
     False,
     // push constants from chunk on the stack
-    Const0,
-    Const1,
-    Const2,
-    Const3,
-    Const4,
-    Const5,
-    Const6,
-    Const7,
-    Const1B, // index = next u8 + 8 = 8..=263
-    Const2B, // index = next u16 + 8 + 256 = 264..=65799
+    Const1B, // index = next u8 = 0..=255
+    Const2B, // index = next u16 + 256 = 256..=65791
     // Global variables (within the current module)
     SetGlobal,
     GetGlobal,
@@ -85,18 +77,10 @@ impl Chunk {
             0 => Op::Null,
             1 => Op::True,
             2 => Op::False,
-            3 => Op::Const0,
-            4 => Op::Const1,
-            5 => Op::Const2,
-            6 => Op::Const3,
-            7 => Op::Const4,
-            8 => Op::Const5,
-            9 => Op::Const6,
-            10 => Op::Const7,
-            11 => Op::Const1B,
-            12 => Op::Const2B,
-            13 => Op::SetGlobal,
-            14 => Op::GetGlobal,
+            3 => Op::Const1B,
+            4 => Op::Const2B,
+            5 => Op::SetGlobal,
+            6 => Op::GetGlobal,
             b => panic!("invalid opcode: {}", b),
         }
     }
@@ -169,14 +153,6 @@ impl std::fmt::Debug for Chunk {
                 Op::Null => f.write_str("OP_NULL\n")?,
                 Op::True => f.write_str("OP_TRUE\n")?,
                 Op::False => f.write_str("OP_FALSE\n")?,
-                Op::Const0 => self.print_constant_op("OP_CONST0", 0, f)?,
-                Op::Const1 => self.print_constant_op("OP_CONST1", 1, f)?,
-                Op::Const2 => self.print_constant_op("OP_CONST2", 2, f)?,
-                Op::Const3 => self.print_constant_op("OP_CONST3", 3, f)?,
-                Op::Const4 => self.print_constant_op("OP_CONST4", 4, f)?,
-                Op::Const5 => self.print_constant_op("OP_CONST5", 5, f)?,
-                Op::Const6 => self.print_constant_op("OP_CONST6", 6, f)?,
-                Op::Const7 => self.print_constant_op("OP_CONST7", 7, f)?,
                 Op::Const1B => {
                     let index = self.get_u8(ip) as usize;
                     ip += 1;
