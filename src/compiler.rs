@@ -304,7 +304,7 @@ where
         let return_index = self.locals.len() - num_locals_in_scope;
         self.set_local(return_index, self.current.line_number);
         self.locals.truncate(return_index);
-        for _ in 1..num_locals_in_scope {
+        for _ in 0..num_locals_in_scope {
             self.chunk.push_op(Op::Pop, self.current.line_number);
         }
     }

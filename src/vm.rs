@@ -45,6 +45,14 @@ impl Fiber {
         })
     }
 
+    fn stack_peek(&self) -> Option<Value<'_>> {
+        self.value_stack.borrow_mut().last().map(|v| {
+            // Safe because we have a reference to the fiber, which means its stack is still
+            // reachable.
+            unsafe { Value::new(*v) }
+        })
+    }
+
     fn current_frame(&self) -> &CallFrame {
         self.call_stack.last().expect("bug: call stack underflow")
     }
@@ -133,12 +141,11 @@ where
                         .expect("bug: stack underflow: OP_SETGLOBAL: value");
                     let variable = self
                         .fiber
-                        .stack_pop()
+                        .stack_peek()
                         .expect("bug: stack underflow: OP_SETGLOBAL: variable")
                         .as_symbol()
                         .expect("bug: OP_SETGLOBAL: variable is not a symbol");
                     self.mold.globals.set(module, variable, value);
-                    self.fiber.stack_push(Value::symbol(variable));
                 }
                 Op::GetGlobal => {
                     let variable = self
@@ -178,7 +185,7 @@ where
                     ip += 1;
                     let value = self
                         .fiber
-                        .stack_pop()
+                        .stack_peek()
                         .expect("bug: stack underflow: OP_SETLOCAL");
                     self.fiber.value_stack.borrow_mut()[index] = value.into_inner();
                 }
@@ -187,7 +194,7 @@ where
                     ip += 2;
                     let value = self
                         .fiber
-                        .stack_pop()
+                        .stack_peek()
                         .expect("bug: stack underflow: OP_SETLOCAL");
                     self.fiber.value_stack.borrow_mut()[index] = value.into_inner();
                 }
