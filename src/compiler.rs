@@ -186,9 +186,9 @@ where
         };
         match symbol {
             "define" => self.define(),
-            "let" => self.let_(),
+            "let" => self.let_(false),
+            "let*" => self.let_(true),
             /*
-            "let*" => self.let_(),
             "letrec" => self.let_(),
             "letrec*" => self.let_(),
             */
@@ -309,7 +309,7 @@ where
         }
     }
 
-    fn let_(&mut self) {
+    fn let_(&mut self, is_star: bool) {
         self.advance();
         self.begin_scope();
         // Bindings
@@ -331,16 +331,23 @@ where
                     HELP_LET_BINDING_DOES_NOT_START_WITH_PAREN,
                 );
             }
-            if let TokenType::Identifier(variable) = self.current.typ {
-                self.declare_variable(variable, false, false);
+            let index = if let TokenType::Identifier(variable) = self.current.typ {
+                let index = self.declare_variable(variable, false, false);
                 self.advance();
+                index
             } else {
                 self.error_at_current_token(
                     "malformed let binding",
                     HELP_LET_BINDING_FIRST_IS_NOT_IDENTIFIER,
                 );
+                None
             };
             self.expression();
+            if is_star && index.is_some() {
+                let index = index.unwrap();
+                self.locals[index].visible = true;
+                self.locals[index].initialized = true;
+            }
             self.advance();
             if std::matches!(self.current.typ, TokenType::RightParen) {
                 self.in_panic_mode.set(false);
@@ -414,6 +421,15 @@ where
             .position(|local| local.visible && local.name == symbol)
             .map(|index| self.locals.len() - index - 1)
         {
+            if !self.locals[index].initialized {
+                self.error_at_current_token(
+                    format!(
+                        "referencing unitialized local '{}'",
+                        self.locals[index].name
+                    ),
+                    HELP_LOCAL_UNITIALIZED,
+                );
+            }
             self.get_local(index, self.current.line_number);
         } else {
             self.push_constant_op(
@@ -585,3 +601,4 @@ const HELP_LET_BINDING_DOES_NOT_START_WITH_PAREN: Option<&str> = None; // TODO
 const HELP_LET_BINDING_DOES_NOT_END_WITH_PAREN: Option<&str> = None; // TODO
 const HELP_LET_BINDING_FIRST_IS_NOT_IDENTIFIER: Option<&str> = None; // TODO
 const HELP_LET_BINDING_REBOUND: Option<&str> = None; // TODO
+const HELP_LOCAL_UNITIALIZED: Option<&str> = None; // TODO
